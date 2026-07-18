@@ -78,6 +78,15 @@ src/
   components/SalesChart.tsx
 ```
 
+## Test data
+
+To populate your Sandbox account with realistic inventory, orders, payments,
+team members, and payroll data, see [`scripts/README.md`](scripts/README.md):
+
+```bash
+npm run seed:all
+```
+
 ## Next phases
 
 1. Persist tokens in Postgres (instead of cookie-only)

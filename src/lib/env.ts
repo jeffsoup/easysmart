@@ -54,4 +54,7 @@ export const OAUTH_SCOPES = [
   "ORDERS_READ",
   "ITEMS_READ",
   "INVENTORY_READ",
+  // Labor / payroll-adjacent (timecards + wages; not full payroll runs).
+  "TIMECARDS_READ",
+  "EMPLOYEES_READ",
 ] as const;

@@ -1,4 +1,5 @@
 import type { InventoryHealthReport, InventoryStatus } from "@/lib/inventory";
+import { LEAD_TIME_DAYS, TARGET_COVER_DAYS } from "@/lib/inventory";
 
 type Props = {
   report: InventoryHealthReport;
@@ -27,11 +28,13 @@ export function InventoryHealth({ report, error }: Props) {
   ];
 
   return (
-    <section className="mt-14">
+    <section>
       <h2 className="font-serif text-3xl tracking-tight">Inventory health</h2>
       <p className="mt-2 max-w-2xl text-stone-600">
-        Stock risk and slow movers from Catalog + Inventory, with sell-through
-        from the last 30 days of completed orders.
+        Stock risk, slow movers, and reorder suggestions from Catalog +
+        Inventory, with sell-through from the last 30 days of completed orders.
+        Reorder qty targets ~{TARGET_COVER_DAYS} days of cover (assumes{" "}
+        {LEAD_TIME_DAYS}-day lead time).
       </p>
 
       {error ? (
@@ -40,13 +43,14 @@ export function InventoryHealth({ report, error }: Props) {
         </div>
       ) : (
         <>
-          <div className="mt-6 grid gap-4 sm:grid-cols-3">
+          <div className="mt-6 grid gap-4 sm:grid-cols-4">
             <Stat label="Tracked variations" value={String(report.trackedCount)} />
             <Stat label="Out of stock" value={String(report.outOfStock.length)} />
             <Stat
-              label="Needs attention"
-              value={String(report.lowStock.length + report.slowMovers.length)}
+              label="Reorder now"
+              value={String(report.reorderSuggestions.length)}
             />
+            <Stat label="Slow movers" value={String(report.slowMovers.length)} />
           </div>
 
           {report.cards.length > 0 ? (
@@ -60,6 +64,52 @@ export function InventoryHealth({ report, error }: Props) {
                 </li>
               ))}
             </ul>
+          ) : null}
+
+          {report.reorderSuggestions.length > 0 ? (
+            <div className="mt-8">
+              <h3 className="font-serif text-xl tracking-tight">
+                Reorder suggestions
+              </h3>
+              <div className="mt-3 overflow-hidden rounded-lg border border-stone-300/80 bg-white">
+                <table className="w-full text-left text-sm">
+                  <thead className="border-b border-stone-200 bg-stone-50 text-stone-600">
+                    <tr>
+                      <th className="px-4 py-3 font-medium">Item</th>
+                      <th className="px-4 py-3 font-medium">On hand</th>
+                      <th className="px-4 py-3 font-medium">Avg / day</th>
+                      <th className="px-4 py-3 font-medium">Days cover</th>
+                      <th className="px-4 py-3 font-medium">Order qty</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {report.reorderSuggestions.slice(0, 20).map((item) => (
+                      <tr
+                        key={item.variationId}
+                        className="border-b border-stone-100"
+                      >
+                        <td className="px-4 py-2.5">
+                          <div>{item.name}</div>
+                          {item.sku ? (
+                            <div className="text-xs text-stone-500">
+                              SKU {item.sku}
+                            </div>
+                          ) : null}
+                        </td>
+                        <td className="px-4 py-2.5 tabular-nums">{item.quantity}</td>
+                        <td className="px-4 py-2.5 tabular-nums">{item.avgDaily}</td>
+                        <td className="px-4 py-2.5 tabular-nums">
+                          {item.daysOfCover == null ? "—" : item.daysOfCover}
+                        </td>
+                        <td className="px-4 py-2.5 font-medium tabular-nums text-teal-900">
+                          {item.suggestedReorderQty}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           ) : null}
 
           {attention.length > 0 ? (
@@ -76,11 +126,16 @@ export function InventoryHealth({ report, error }: Props) {
                 </thead>
                 <tbody>
                   {attention.slice(0, 25).map((item) => (
-                    <tr key={item.variationId} className="border-b border-stone-100">
+                    <tr
+                      key={item.variationId}
+                      className="border-b border-stone-100"
+                    >
                       <td className="px-4 py-2.5">
                         <div>{item.name}</div>
                         {item.sku ? (
-                          <div className="text-xs text-stone-500">SKU {item.sku}</div>
+                          <div className="text-xs text-stone-500">
+                            SKU {item.sku}
+                          </div>
                         ) : null}
                       </td>
                       <td className="px-4 py-2.5">
@@ -91,7 +146,9 @@ export function InventoryHealth({ report, error }: Props) {
                         </span>
                       </td>
                       <td className="px-4 py-2.5 tabular-nums">{item.quantity}</td>
-                      <td className="px-4 py-2.5 tabular-nums">{item.unitsSold30d}</td>
+                      <td className="px-4 py-2.5 tabular-nums">
+                        {item.unitsSold30d}
+                      </td>
                       <td className="px-4 py-2.5 tabular-nums">
                         {item.daysOfCover == null ? "—" : item.daysOfCover}
                       </td>

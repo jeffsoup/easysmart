@@ -3,6 +3,10 @@ import type { CatalogObject, Order, SquareClient } from "square";
 const DEFAULT_LOW_STOCK = 5;
 const SLOW_MOVER_MIN_QTY = 5;
 const REORDER_DAYS_OF_COVER = 7;
+/** Assumed supplier lead time for reorder math (days). */
+export const LEAD_TIME_DAYS = 7;
+/** Target on-hand cover after a reorder = lead time + buffer. */
+export const TARGET_COVER_DAYS = LEAD_TIME_DAYS + 7;
 const LOOKBACK_DAYS = 30;
 
 export type InventoryStatus =
@@ -17,7 +21,9 @@ export type InventoryItemHealth = {
   sku: string | null;
   quantity: number;
   unitsSold30d: number;
+  avgDaily: number;
   daysOfCover: number | null;
+  suggestedReorderQty: number;
   status: InventoryStatus;
   insight: string;
 };
@@ -28,6 +34,7 @@ export type InventoryHealthReport = {
   outOfStock: InventoryItemHealth[];
   lowStock: InventoryItemHealth[];
   slowMovers: InventoryItemHealth[];
+  reorderSuggestions: InventoryItemHealth[];
   cards: string[];
 };
 
@@ -76,6 +83,13 @@ export async function fetchInventoryHealth(
   const slowMovers = items
     .filter((item) => item.status === "slow_mover")
     .sort((a, b) => b.quantity - a.quantity);
+  const reorderSuggestions = items
+    .filter((item) => item.suggestedReorderQty > 0)
+    .sort((a, b) => {
+      const aCover = a.daysOfCover ?? -1;
+      const bCover = b.daysOfCover ?? -1;
+      return aCover - bCover || b.suggestedReorderQty - a.suggestedReorderQty;
+    });
 
   return {
     items,
@@ -83,7 +97,14 @@ export async function fetchInventoryHealth(
     outOfStock,
     lowStock,
     slowMovers,
-    cards: buildInsightCards({ outOfStock, lowStock, slowMovers, items }),
+    reorderSuggestions,
+    cards: buildInsightCards({
+      outOfStock,
+      lowStock,
+      slowMovers,
+      reorderSuggestions,
+      items,
+    }),
   };
 }
 
@@ -94,6 +115,7 @@ function emptyReport(): InventoryHealthReport {
     outOfStock: [],
     lowStock: [],
     slowMovers: [],
+    reorderSuggestions: [],
     cards: [
       "No tracked inventory items yet. Enable inventory tracking on catalog variations in the Square Dashboard, set stock counts, then reconnect if needed.",
     ],
@@ -218,10 +240,7 @@ async function fetchUnitsSoldByVariation(
   return sold;
 }
 
-function accumulateLineItemSales(
-  order: Order,
-  sold: Map<string, number>,
-) {
+function accumulateLineItemSales(order: Order, sold: Map<string, number>) {
   for (const line of order.lineItems ?? []) {
     const variationId = line.catalogObjectId;
     if (!variationId) continue;
@@ -231,14 +250,21 @@ function accumulateLineItemSales(
   }
 }
 
+function suggestedReorderQuantity(quantity: number, avgDaily: number): number {
+  if (avgDaily <= 0) return 0;
+  const targetOnHand = Math.ceil(avgDaily * TARGET_COVER_DAYS);
+  return Math.max(0, targetOnHand - Math.max(0, quantity));
+}
+
 function scoreVariation(
   variation: TrackedVariation,
   quantity: number,
   unitsSold30d: number,
 ): InventoryItemHealth {
-  const avgDaily = unitsSold30d / LOOKBACK_DAYS;
+  const avgDaily = Number((unitsSold30d / LOOKBACK_DAYS).toFixed(2));
   const daysOfCover =
     avgDaily > 0 ? Number((quantity / avgDaily).toFixed(1)) : null;
+  const suggestedReorderQty = suggestedReorderQuantity(quantity, avgDaily);
 
   if (quantity <= 0) {
     return {
@@ -247,12 +273,16 @@ function scoreVariation(
       sku: variation.sku,
       quantity,
       unitsSold30d,
+      avgDaily,
       daysOfCover: 0,
+      suggestedReorderQty,
       status: "out_of_stock",
       insight:
-        unitsSold30d > 0
-          ? `Out of stock — sold ${formatUnits(unitsSold30d)} in the last ${LOOKBACK_DAYS} days.`
-          : "Out of stock with no recent sales.",
+        suggestedReorderQty > 0
+          ? `Out of stock — reorder ~${formatUnits(suggestedReorderQty)} to cover ~${TARGET_COVER_DAYS} days (incl. ${LEAD_TIME_DAYS}-day lead time).`
+          : unitsSold30d > 0
+            ? `Out of stock — sold ${formatUnits(unitsSold30d)} in the last ${LOOKBACK_DAYS} days.`
+            : "Out of stock with no recent sales.",
     };
   }
 
@@ -267,9 +297,14 @@ function scoreVariation(
       sku: variation.sku,
       quantity,
       unitsSold30d,
+      avgDaily,
       daysOfCover,
+      suggestedReorderQty,
       status: "low_stock",
-      insight: `About ${daysOfCover} days of cover left at the current sell-through rate — reorder soon.`,
+      insight:
+        suggestedReorderQty > 0
+          ? `~${daysOfCover} days of cover — reorder ~${formatUnits(suggestedReorderQty)} to reach ~${TARGET_COVER_DAYS} days.`
+          : `About ${daysOfCover} days of cover left at the current sell-through rate — reorder soon.`,
     };
   }
 
@@ -280,9 +315,14 @@ function scoreVariation(
       sku: variation.sku,
       quantity,
       unitsSold30d,
+      avgDaily,
       daysOfCover,
+      suggestedReorderQty,
       status: "low_stock",
-      insight: `Only ${formatUnits(quantity)} left (threshold ${variation.alertThreshold}).`,
+      insight:
+        suggestedReorderQty > 0
+          ? `Only ${formatUnits(quantity)} left — reorder ~${formatUnits(suggestedReorderQty)}.`
+          : `Only ${formatUnits(quantity)} left (threshold ${variation.alertThreshold}).`,
     };
   }
 
@@ -293,7 +333,9 @@ function scoreVariation(
       sku: variation.sku,
       quantity,
       unitsSold30d,
+      avgDaily,
       daysOfCover,
+      suggestedReorderQty: 0,
       status: "slow_mover",
       insight: `${formatUnits(quantity)} on hand with no sales in ${LOOKBACK_DAYS} days — cash tied up in stock.`,
     };
@@ -305,7 +347,9 @@ function scoreVariation(
     sku: variation.sku,
     quantity,
     unitsSold30d,
+    avgDaily,
     daysOfCover,
+    suggestedReorderQty,
     status: "healthy",
     insight:
       daysOfCover != null
@@ -318,9 +362,21 @@ function buildInsightCards(input: {
   outOfStock: InventoryItemHealth[];
   lowStock: InventoryItemHealth[];
   slowMovers: InventoryItemHealth[];
+  reorderSuggestions: InventoryItemHealth[];
   items: InventoryItemHealth[];
 }): string[] {
   const cards: string[] = [];
+
+  if (input.reorderSuggestions.length > 0) {
+    const top = input.reorderSuggestions[0];
+    const units = input.reorderSuggestions.reduce(
+      (sum, item) => sum + item.suggestedReorderQty,
+      0,
+    );
+    cards.push(
+      `Reorder ${input.reorderSuggestions.length} item${input.reorderSuggestions.length === 1 ? "" : "s"} (~${formatUnits(units)} units total). Top pick: ${top.name} — order ~${formatUnits(top.suggestedReorderQty)}.`,
+    );
+  }
 
   if (input.outOfStock.length > 0) {
     const names = input.outOfStock

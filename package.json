@@ -6,7 +6,13 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "seed:inventory": "tsx scripts/inventory/seed-inventory.ts",
+    "seed:orders": "tsx scripts/orders/seed-orders.ts",
+    "seed:payments": "tsx scripts/payments/seed-payments.ts",
+    "seed:team": "tsx scripts/team/seed-team-members.ts",
+    "seed:payroll": "tsx scripts/payroll/seed-payroll.ts",
+    "seed:all": "tsx scripts/seed-all.ts"
   },
   "dependencies": {
     "iron-session": "^8.0.4",
@@ -23,6 +29,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.10",
     "tailwindcss": "^4",
+    "tsx": "^4.19.2",
     "typescript": "^5"
   }
 }
