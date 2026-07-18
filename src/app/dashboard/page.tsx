@@ -23,7 +23,7 @@ export const dynamic = "force-dynamic";
 
 function scopeHint(message: string) {
   if (/FORBIDDEN|insufficient|permission|UNAUTHORIZED/i.test(message)) {
-    return `${message} — Disconnect and reconnect (open Sandbox Seller Dashboard first) to grant the latest OAuth scopes, including TIMECARDS_READ and EMPLOYEES_READ.`;
+    return `${message} — Disconnect and reconnect (open Sandbox Seller Dashboard first) to grant the latest OAuth scopes, including PAYMENTS_READ.`;
   }
   return message;
 }
@@ -50,7 +50,14 @@ export default async function DashboardPage() {
   let points: Awaited<
     ReturnType<typeof fetchDailyNetSalesLast30Days>
   >["points"] = [];
+  let byHour: Awaited<
+    ReturnType<typeof fetchDailyNetSalesLast30Days>
+  >["byHour"] = [];
+  let byDayHour: Awaited<
+    ReturnType<typeof fetchDailyNetSalesLast30Days>
+  >["byDayHour"] = {};
   let source: "reporting" | "orders" | null = null;
+  let timeZone = "UTC";
   let salesError: string | null = null;
 
   let inventoryReport: InventoryHealthReport | null = null;
@@ -62,7 +69,10 @@ export default async function DashboardPage() {
   try {
     const result = await fetchDailyNetSalesLast30Days(client);
     points = result.points;
+    byHour = result.byHour;
+    byDayHour = result.byDayHour;
     source = result.source;
+    timeZone = result.timeZone;
   } catch (err) {
     salesError = scopeHint(
       err instanceof Error ? err.message : "Failed to load sales data",
@@ -97,6 +107,15 @@ export default async function DashboardPage() {
     laborCostPctOfSales: null,
     hasWageData: false,
     cards: [],
+    timecards: [],
+    byTeamMember: [],
+    teamSales: {
+      lookbackDays: 30,
+      attributedSales: 0,
+      unattributedPaymentCount: 0,
+      attributedOrderCount: 0,
+      byTeamMember: [],
+    },
   };
 
   return (
@@ -126,7 +145,10 @@ export default async function DashboardPage() {
         sales={
           <NetSalesPanel
             points={points}
+            byHour={byHour}
+            byDayHour={byDayHour}
             source={source}
+            timeZone={timeZone}
             error={salesError}
             summary={summary}
           />
