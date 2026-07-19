@@ -28,7 +28,7 @@ directly from TypeScript.
 
 ## Running
 
-Run everything in order:
+Run the base dataset in order:
 
 ```bash
 npm run seed:all
@@ -43,6 +43,13 @@ npm run seed:customers   # a pool of customer profiles
 npm run seed:orders      # orders against that catalog; most paid, some left open
 npm run seed:payments    # pays off any open orders + a few standalone charges + one refund
 npm run seed:payroll     # 30 days of closed timecards for hourly team members
+```
+
+`seed:refunds` is a separate, on-demand scenario script (not part of
+`seed:all`) for when you specifically want more refund data:
+
+```bash
+npm run seed:refunds     # 5 full refunds against completed, customer-attached payments
 ```
 
 Order matters if you run scripts individually: `seed:inventory` before
@@ -74,6 +81,7 @@ npm run seed:payroll -- --shifts=20    # shifts per team member, default 15
 | `seed:customers` | 10 customer profiles |
 | `seed:orders` | ~40 orders with 1–4 line items each, ~85% paid and completed (each attributed to a random team member, ~65% also attributed to a random customer), ~15% left open |
 | `seed:payments` | Pays off open orders (attributed to staff/customer same as above), records 3 standalone custom-amount payments (always attributed to a customer + team member), issues 1 sample refund |
+| `seed:refunds` | Issues full refunds (100% of the amount) against 5 completed, customer-attached payments that haven't already been refunded |
 | `seed:payroll` | ~15 closed timecards per hourly team member, spread across the last 29 days, with breaks on longer shifts |
 
 ## The inventory mix
@@ -131,12 +139,13 @@ created without a `customer_id`, same graceful fallback as team members.
 
 ## Known limitations
 
-- **Orders and payments can't be backdated.** This is a Square API
+- **Orders, payments, and refunds can't be backdated.** This is a Square API
   constraint, not a script limitation: `created_at` / `closed_at` on an
-  Order are set server-side and there's no request field to override them
-  (this is true in both Sandbox and production, and also applies to Virtual
-  Terminal payments — anything you create "now" is dated "now"). So a single
-  run of `seed:orders` / `seed:payments` produces a one-day spike of sales
+  Order (and the equivalent timestamps on Payments and Refunds) are set
+  server-side and there's no request field to override them (this is true in
+  both Sandbox and production, and also applies to Virtual Terminal payments —
+  anything you create "now" is dated "now"). So a single run of `seed:orders` /
+  `seed:payments` / `seed:refunds` produces a one-day spike of activity
   "today," not a smooth 30-day trend.
 
   If you want the Sales chart to show a real multi-day trend, the only way
@@ -200,6 +209,7 @@ scripts/
   customers/seed-customers.ts
   orders/seed-orders.ts
   payments/seed-payments.ts
+  payments/seed-refunds.ts
   payroll/seed-payroll.ts
   seed-all.ts
 ```

@@ -1,4 +1,9 @@
-import { ReportingHelper, type Order, type SquareClient } from "square";
+import {
+  ReportingHelper,
+  type Order,
+  type PaymentRefund,
+  type SquareClient,
+} from "square";
 import { getSquareConfig } from "./env";
 import {
   eachDateInRange,
@@ -9,6 +14,8 @@ import {
 export type DailyNetSalesPoint = {
   date: string;
   netSales: number;
+  /** Completed/pending refund total for the local calendar day (positive dollars). */
+  refunds: number;
 };
 
 /** Net sales rolled up by hour of day (0–23) over the lookback window. */
@@ -36,11 +43,19 @@ export async function fetchDailyNetSales(
 ): Promise<SalesFetchResult> {
   const { environment } = getSquareConfig();
 
-  if (environment === "sandbox") {
-    return fetchSalesFromOrders(client, range);
-  }
+  const result =
+    environment === "sandbox"
+      ? await fetchSalesFromOrders(client, range)
+      : await fetchSalesFromReporting(client, range);
 
-  return fetchSalesFromReporting(client, range);
+  const refundsByDay = await fetchRefundsByDay(client, result.range);
+  return {
+    ...result,
+    points: result.points.map((point) => ({
+      ...point,
+      refunds: refundsByDay[point.date] ?? 0,
+    })),
+  };
 }
 
 /** @deprecated Prefer fetchDailyNetSales with an explicit range. */
@@ -389,7 +404,53 @@ function fillDateRange(
   return eachDateInRange(startDate, endDate).map((date) => ({
     date,
     netSales: byDate[date] ?? 0,
+    refunds: 0,
   }));
+}
+
+/**
+ * Sum completed/pending payment refunds by local calendar day for the range.
+ */
+async function fetchRefundsByDay(
+  client: SquareClient,
+  range: ResolvedSalesRange,
+): Promise<Record<string, number>> {
+  const timeZone = range.timeZone || "UTC";
+  const { start, end } = zonedRangeBounds(
+    range.startDate,
+    range.endDate,
+    timeZone,
+  );
+
+  const byDate = new Map<string, number>();
+  const page = await client.refunds.list({
+    beginTime: start.toISOString(),
+    endTime: end.toISOString(),
+    sortOrder: "DESC",
+    limit: 100,
+  });
+
+  for await (const refund of page) {
+    if (!isCountableRefund(refund)) continue;
+    const createdAt = refund.createdAt;
+    if (!createdAt) continue;
+    const date = dateFromStamp(createdAt, timeZone);
+    if (!date || date < range.startDate || date > range.endDate) continue;
+    const dollars = Number(refund.amountMoney?.amount ?? 0) / 100;
+    if (!Number.isFinite(dollars) || dollars <= 0) continue;
+    byDate.set(date, (byDate.get(date) ?? 0) + dollars);
+  }
+
+  const result: Record<string, number> = {};
+  for (const [date, amount] of byDate) {
+    result[date] = Math.round(amount * 100) / 100;
+  }
+  return result;
+}
+
+function isCountableRefund(refund: PaymentRefund): boolean {
+  const status = refund.status?.toUpperCase();
+  return status === "COMPLETED" || status === "PENDING" || status === "APPROVED";
 }
 
 function fillHours(byHour: Map<number, number>): HourlyNetSalesPoint[] {
@@ -423,7 +484,7 @@ export function summarizeSales(points: DailyNetSalesPoint[]) {
   const average = daysWithSales > 0 ? total / daysWithSales : 0;
   const peak = points.reduce(
     (best, p) => (p.netSales > best.netSales ? p : best),
-    { date: "—", netSales: 0 },
+    { date: "—", netSales: 0, refunds: 0 },
   );
 
   return { total, average, peak, dayCount: points.length };

@@ -1,12 +1,6 @@
 "use client";
 
-import {
-  useCallback,
-  useMemo,
-  useState,
-  useTransition,
-  type ReactNode,
-} from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { HourlySalesChart } from "@/components/HourlySalesChart";
 import { SalesChart } from "@/components/SalesChart";
 import type { DayItemSaleRow } from "@/lib/dayItemSales";
@@ -37,11 +31,6 @@ type SalesPayload = {
   source: "reporting" | "orders" | null;
   timeZone: string;
   range: ResolvedSalesRange;
-  summary: {
-    total: number;
-    average: number;
-    peak: DailyNetSalesPoint;
-  };
   error: string | null;
 };
 
@@ -88,7 +77,16 @@ function buildQuery(params: {
 }
 
 export function NetSalesPanel({ initial }: Props) {
-  const [data, setData] = useState<SalesPayload>(initial);
+  const [data, setData] = useState<SalesPayload>(() => ({
+    points: initial.points,
+    byHour: initial.byHour,
+    byDayHour: initial.byDayHour,
+    byDayItems: initial.byDayItems,
+    source: initial.source,
+    timeZone: initial.timeZone,
+    range: initial.range,
+    error: initial.error,
+  }));
   const [mode, setMode] = useState<SalesRangeMode>(initial.range.mode);
   const [preset, setPreset] = useState<AbsolutePreset>(
     initial.range.preset ?? "last_7_days",
@@ -96,7 +94,7 @@ export function NetSalesPanel({ initial }: Props) {
   const [customFrom, setCustomFrom] = useState(initial.range.startDate);
   const [customTo, setCustomTo] = useState(initial.range.endDate);
   const [rangeError, setRangeError] = useState<string | null>(null);
-  const [isPending, startTransition] = useTransition();
+  const [isPending, setIsPending] = useState(false);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [itemsDate, setItemsDate] = useState<string | null>(null);
 
@@ -108,9 +106,14 @@ export function NetSalesPanel({ initial }: Props) {
     source,
     timeZone,
     range,
-    summary,
     error,
   } = data;
+
+  // Always derive KPI boxes from the currently loaded series so they stay
+  // in sync when the timeframe changes.
+  const summary = useMemo(() => summarizeSales(points), [points]);
+  const hourlySummary = useMemo(() => summarizeHourlySales(byHour), [byHour]);
+  const hasHourlySales = byHour.some((p) => p.netSales > 0);
 
   const loadRange = useCallback(
     (next: {
@@ -129,12 +132,15 @@ export function NetSalesPanel({ initial }: Props) {
       setRangeError(null);
       setSelectedDate(null);
       setItemsDate(null);
+      setIsPending(true);
 
-      startTransition(async () => {
+      void (async () => {
         try {
           const res = await fetch(`/api/sales?${buildQuery(next)}`);
           const body = (await res.json()) as SalesPayload & {
             error?: string;
+            points?: DailyNetSalesPoint[];
+            byHour?: HourlyNetSalesPoint[];
           };
           if (!res.ok) {
             setData((prev) => ({
@@ -144,14 +150,13 @@ export function NetSalesPanel({ initial }: Props) {
             return;
           }
           setData({
-            points: body.points,
-            byHour: body.byHour,
-            byDayHour: body.byDayHour,
-            byDayItems: body.byDayItems,
+            points: body.points ?? [],
+            byHour: body.byHour ?? [],
+            byDayHour: body.byDayHour ?? {},
+            byDayItems: body.byDayItems ?? {},
             source: body.source,
             timeZone: body.timeZone,
             range: body.range,
-            summary: body.summary ?? summarizeSales(body.points),
             error: null,
           });
           if (body.range.mode === "custom") {
@@ -163,14 +168,13 @@ export function NetSalesPanel({ initial }: Props) {
             ...prev,
             error: "Failed to load sales data",
           }));
+        } finally {
+          setIsPending(false);
         }
-      });
+      })();
     },
     [],
   );
-
-  const hourlySummary = summarizeHourlySales(byHour);
-  const hasHourlySales = byHour.some((p) => p.netSales > 0);
 
   const selectedDayHours = useMemo(() => {
     if (!selectedDate) return null;
@@ -196,7 +200,12 @@ export function NetSalesPanel({ initial }: Props) {
   }, [byDayItems, itemsDate]);
 
   const dayItemsTotal = useMemo(
-    () => dayItems.reduce((sum, row) => sum + row.soldAmount, 0),
+    () =>
+      dayItems.reduce((sum, row) => {
+        const sale = row.contextOnly ? 0 : row.soldAmount;
+        const refund = row.refund?.amount ?? 0;
+        return sum + sale - refund;
+      }, 0),
     [dayItems],
   );
 
@@ -265,7 +274,7 @@ export function NetSalesPanel({ initial }: Props) {
               </h3>
               <p className="mt-1 text-sm text-stone-500">
                 {dayItems.length} line item{dayItems.length === 1 ? "" : "s"} ·{" "}
-                {formatCurrency(dayItemsTotal)}
+                <SignedAmount value={dayItemsTotal} />
                 {timeZone ? ` · ${timeZone}` : ""}
               </p>
             </div>
@@ -430,6 +439,7 @@ export function NetSalesPanel({ initial }: Props) {
             <tr>
               <th className="px-4 py-3 font-medium">Date</th>
               <th className="px-4 py-3 font-medium">Net sales</th>
+              <th className="px-4 py-3 font-medium">Refunds</th>
               <th className="px-4 py-3 font-medium" />
             </tr>
           </thead>
@@ -439,6 +449,9 @@ export function NetSalesPanel({ initial }: Props) {
                 <td className="px-4 py-2.5">{p.date}</td>
                 <td className="px-4 py-2.5 tabular-nums">
                   {formatCurrency(p.netSales)}
+                </td>
+                <td className="px-4 py-2.5 tabular-nums">
+                  <RefundAmount value={p.refunds ?? 0} />
                 </td>
                 <td className="px-4 py-2.5 text-right">
                   <button
@@ -685,25 +698,62 @@ function DayItemsTable({ rows }: { rows: DayItemSaleRow[] }) {
       </thead>
       <tbody>
         {sorted.map((row) => (
-          <tr key={row.id} className="border-b border-stone-100">
-            <td className="px-4 py-2.5 tabular-nums text-stone-600">
-              {row.sku ?? "—"}
-            </td>
-            <td className="px-4 py-2.5">
-              <div>{row.itemName}</div>
-              {row.quantity !== 1 ? (
-                <div className="text-xs text-stone-500">Qty {row.quantity}</div>
-              ) : null}
-            </td>
-            <td className="px-4 py-2.5 tabular-nums">
-              {formatCurrency(row.soldAmount)}
-            </td>
-            <td className="px-4 py-2.5 whitespace-nowrap">{row.soldAtLabel}</td>
-            <td className="px-4 py-2.5">{row.teamMemberName}</td>
-          </tr>
+          <ItemSaleRows key={row.id} row={row} />
         ))}
       </tbody>
     </table>
+  );
+}
+
+function ItemSaleRows({ row }: { row: DayItemSaleRow }) {
+  return (
+    <>
+      <tr className="border-b border-stone-100">
+        <td className="px-4 py-2.5 tabular-nums text-stone-600">
+          {row.sku ?? "—"}
+        </td>
+        <td className="px-4 py-2.5">
+          <div>{row.itemName}</div>
+          {row.quantity !== 1 ? (
+            <div className="text-xs text-stone-500">Qty {row.quantity}</div>
+          ) : null}
+          {row.contextOnly ? (
+            <div className="text-xs text-stone-500">Original sale</div>
+          ) : null}
+        </td>
+        <td className="px-4 py-2.5 tabular-nums">
+          {row.contextOnly ? (
+            <span className="text-stone-400">
+              {formatCurrency(row.soldAmount)}
+            </span>
+          ) : (
+            formatCurrency(row.soldAmount)
+          )}
+        </td>
+        <td className="px-4 py-2.5 whitespace-nowrap">{row.soldAtLabel}</td>
+        <td className="px-4 py-2.5">{row.teamMemberName}</td>
+      </tr>
+      {row.refund ? (
+        <tr className="border-b border-stone-100 bg-red-50/40">
+          <td className="px-4 py-2 text-stone-400">—</td>
+          <td className="px-4 py-2 pl-8 text-red-800">
+            <div>Refund</div>
+            {row.refund.reason ? (
+              <div className="text-xs text-red-700/80">{row.refund.reason}</div>
+            ) : null}
+          </td>
+          <td className="px-4 py-2 tabular-nums">
+            <SignedAmount value={-row.refund.amount} />
+          </td>
+          <td className="px-4 py-2 whitespace-nowrap text-red-800/90">
+            {row.refund.atLabel}
+          </td>
+          <td className="px-4 py-2 text-red-800/90">
+            {row.refund.teamMemberName}
+          </td>
+        </tr>
+      ) : null}
+    </>
   );
 }
 
@@ -741,6 +791,24 @@ function SortableTh({
       </button>
     </th>
   );
+}
+
+function RefundAmount({ value }: { value: number }) {
+  if (!value || value <= 0) {
+    return <span className="text-stone-400">—</span>;
+  }
+  return <SignedAmount value={-value} />;
+}
+
+function SignedAmount({ value }: { value: number }) {
+  if (value < 0) {
+    return (
+      <span className="text-red-700">
+        ({formatCurrency(Math.abs(value))})
+      </span>
+    );
+  }
+  return <>{formatCurrency(value)}</>;
 }
 
 function Stat({ label, value }: { label: string; value: ReactNode }) {

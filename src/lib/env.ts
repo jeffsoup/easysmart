@@ -59,4 +59,6 @@ export const OAUTH_SCOPES = [
   "EMPLOYEES_READ",
   // Payment → order attribution for sales by team member.
   "PAYMENTS_READ",
+  // Customer directory + attributed spend/visits.
+  "CUSTOMERS_READ",
 ] as const;

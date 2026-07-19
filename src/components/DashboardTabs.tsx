@@ -6,6 +6,7 @@ const TABS = [
   { id: "sales", label: "Net Sales" },
   { id: "inventory", label: "Inventory Health" },
   { id: "labor", label: "Labor Insights" },
+  { id: "customers", label: "Customers" },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -14,13 +15,25 @@ type Props = {
   sales: ReactNode;
   inventory: ReactNode;
   labor: ReactNode;
+  customers: ReactNode;
 };
 
-export function DashboardTabs({ sales, inventory, labor }: Props) {
+export function DashboardTabs({
+  sales,
+  inventory,
+  labor,
+  customers,
+}: Props) {
   const [active, setActive] = useState<TabId>("sales");
 
   const panel =
-    active === "sales" ? sales : active === "inventory" ? inventory : labor;
+    active === "sales"
+      ? sales
+      : active === "inventory"
+        ? inventory
+        : active === "labor"
+          ? labor
+          : customers;
 
   return (
     <>

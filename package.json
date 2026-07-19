@@ -12,6 +12,7 @@
     "seed:customers": "tsx scripts/customers/seed-customers.ts",
     "seed:orders": "tsx scripts/orders/seed-orders.ts",
     "seed:payments": "tsx scripts/payments/seed-payments.ts",
+    "seed:refunds": "tsx scripts/payments/seed-refunds.ts",
     "seed:payroll": "tsx scripts/payroll/seed-payroll.ts",
     "seed:all": "tsx scripts/seed-all.ts"
   },

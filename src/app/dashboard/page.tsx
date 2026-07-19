@@ -1,9 +1,14 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { CustomerInsights } from "@/components/CustomerInsights";
 import { DashboardTabs } from "@/components/DashboardTabs";
 import { InventoryHealth } from "@/components/InventoryHealth";
 import { LaborInsights } from "@/components/LaborInsights";
 import { NetSalesPanel } from "@/components/NetSalesPanel";
+import {
+  fetchCustomerMetrics,
+  type CustomerMetricsReport,
+} from "@/lib/customers";
 import { fetchDayItemSales } from "@/lib/dayItemSales";
 import {
   fetchInventoryHealth,
@@ -26,7 +31,7 @@ export const dynamic = "force-dynamic";
 
 function scopeHint(message: string) {
   if (/FORBIDDEN|insufficient|permission|UNAUTHORIZED/i.test(message)) {
-    return `${message} — Disconnect and reconnect (open Sandbox Seller Dashboard first) to grant the latest OAuth scopes, including PAYMENTS_READ.`;
+    return `${message} — Disconnect and reconnect (open Sandbox Seller Dashboard first) to grant the latest OAuth scopes, including PAYMENTS_READ and CUSTOMERS_READ.`;
   }
   return message;
 }
@@ -66,6 +71,9 @@ export default async function DashboardPage() {
 
   let laborReport: LaborInsightReport | null = null;
   let laborError: string | null = null;
+
+  let customerReport: CustomerMetricsReport | null = null;
+  let customerError: string | null = null;
 
   try {
     timeZone = await resolveMerchantTimeZone(client);
@@ -112,6 +120,14 @@ export default async function DashboardPage() {
     );
   }
 
+  try {
+    customerReport = await fetchCustomerMetrics(client);
+  } catch (err) {
+    customerError = scopeHint(
+      err instanceof Error ? err.message : "Failed to load customer metrics",
+    );
+  }
+
   const emptyLabor: LaborInsightReport = {
     lookbackDays: 30,
     timecardCount: 0,
@@ -131,6 +147,19 @@ export default async function DashboardPage() {
       attributedOrderCount: 0,
       byTeamMember: [],
     },
+  };
+
+  const emptyCustomers: CustomerMetricsReport = {
+    lookbackDays: 30,
+    totalCustomers: 0,
+    payingCustomerCount: 0,
+    attributedPaymentTotal: 0,
+    avgPaymentPerCustomer: null,
+    visitCount: 0,
+    visitingCustomerCount: 0,
+    avgVisitsPerCustomer: null,
+    unattributedOrderCount: 0,
+    cards: [],
   };
 
   return (
@@ -167,7 +196,6 @@ export default async function DashboardPage() {
               source,
               timeZone,
               range,
-              summary,
               error: salesError,
             }}
           />
@@ -182,6 +210,12 @@ export default async function DashboardPage() {
           <LaborInsights
             report={laborReport ?? emptyLabor}
             error={laborError}
+          />
+        }
+        customers={
+          <CustomerInsights
+            report={customerReport ?? emptyCustomers}
+            error={customerError}
           />
         }
       />
