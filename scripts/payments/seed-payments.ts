@@ -12,7 +12,9 @@
 import type { Payment, SquareClient } from "square";
 import { createScriptClient, listLocationIds } from "../lib/client";
 import { findOpenOrders, payOrderInFull } from "../lib/orders";
-import { idempotencyKey, randomInt } from "../lib/random";
+import { listActiveTeamMemberIds } from "../lib/team";
+import { listCustomerIds } from "../lib/customers";
+import { idempotencyKey, randomChoice, randomInt } from "../lib/random";
 import { info, logSquareError, step, success, warn } from "../lib/log";
 
 const CUSTOM_PAYMENTS = [
@@ -25,6 +27,24 @@ async function main() {
   const client = createScriptClient();
   const locationIds = await listLocationIds(client);
 
+  const teamMemberIds = await listActiveTeamMemberIds(client);
+  if (teamMemberIds.length === 0) {
+    warn(
+      "No active team members found — payments will be created without a team_member_id. " +
+        "Run `npm run seed:team` first to attribute sales to staff.",
+    );
+  }
+  const pickTeamMember = () => (teamMemberIds.length > 0 ? randomChoice(teamMemberIds) : undefined);
+
+  const customerIds = await listCustomerIds(client);
+  if (customerIds.length === 0) {
+    warn(
+      "No customers found — the standalone deposit/invoice payments will have no customer_id. " +
+        "Run `npm run seed:customers` first to attribute them to a buyer.",
+    );
+  }
+  const pickCustomer = () => (customerIds.length > 0 ? randomChoice(customerIds) : undefined);
+
   step("Paying off any open orders");
   const openOrders = await findOpenOrders(client, locationIds);
   info(`Found ${openOrders.length} open order(s).`);
@@ -33,7 +53,7 @@ async function main() {
   const completedPayments: Payment[] = [];
   for (const order of openOrders) {
     try {
-      const payment = await payOrderInFull(client, order);
+      const payment = await payOrderInFull(client, order, pickTeamMember());
       if (payment) {
         paidCount += 1;
         completedPayments.push(payment);
@@ -48,7 +68,14 @@ async function main() {
   for (const custom of CUSTOM_PAYMENTS) {
     try {
       const locationId = locationIds[randomInt(0, locationIds.length - 1)];
-      const payment = await createCustomPayment(client, locationId, custom.amountCents, custom.note);
+      const payment = await createCustomPayment(
+        client,
+        locationId,
+        custom.amountCents,
+        custom.note,
+        pickTeamMember(),
+        pickCustomer(),
+      );
       if (payment) completedPayments.push(payment);
       info(`Recorded "${custom.note}" — $${(custom.amountCents / 100).toFixed(2)}.`);
     } catch (error) {
@@ -72,6 +99,8 @@ async function createCustomPayment(
   locationId: string,
   amountCents: number,
   note: string,
+  teamMemberId?: string,
+  customerId?: string,
 ): Promise<Payment | null> {
   const response = await client.payments.create({
     idempotencyKey: idempotencyKey(),
@@ -82,6 +111,8 @@ async function createCustomPayment(
       buyerSuppliedMoney: { amount: BigInt(amountCents), currency: "USD" },
     },
     note,
+    teamMemberId,
+    customerId,
     autocomplete: true,
   });
   return response.payment ?? null;

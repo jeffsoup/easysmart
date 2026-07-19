@@ -1,5 +1,10 @@
 import { ReportingHelper, type Order, type SquareClient } from "square";
 import { getSquareConfig } from "./env";
+import {
+  eachDateInRange,
+  type ResolvedSalesRange,
+  zonedRangeBounds,
+} from "./salesRange";
 
 export type DailyNetSalesPoint = {
   date: string;
@@ -22,31 +27,68 @@ export type SalesFetchResult = {
   /** Reporting API is production-only; sandbox uses Orders search. */
   source: "reporting" | "orders";
   timeZone: string;
+  range: ResolvedSalesRange;
 };
 
-export async function fetchDailyNetSalesLast30Days(
+export async function fetchDailyNetSales(
   client: SquareClient,
+  range: ResolvedSalesRange,
 ): Promise<SalesFetchResult> {
   const { environment } = getSquareConfig();
 
   if (environment === "sandbox") {
-    return fetchSalesFromOrders(client);
+    return fetchSalesFromOrders(client, range);
   }
 
-  return fetchSalesFromReporting(client);
+  return fetchSalesFromReporting(client, range);
+}
+
+/** @deprecated Prefer fetchDailyNetSales with an explicit range. */
+export async function fetchDailyNetSalesLast30Days(
+  client: SquareClient,
+): Promise<SalesFetchResult> {
+  const timeZone = await resolvePrimaryTimeZone(client);
+  const end = new Date();
+  const endDate = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(end);
+  const start = new Date(end);
+  start.setUTCDate(start.getUTCDate() - 29);
+  const startDate = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(start);
+
+  return fetchDailyNetSales(client, {
+    mode: "custom",
+    preset: null,
+    startDate,
+    endDate,
+    label: "Last 30 days",
+    timeZone,
+  });
 }
 
 async function fetchSalesFromReporting(
   client: SquareClient,
+  range: ResolvedSalesRange,
 ): Promise<SalesFetchResult> {
-  const [dailyResponse, hourlyResponse, timeZone] = await Promise.all([
+  const dateRange: [string, string] = [range.startDate, range.endDate];
+  const timeZone = range.timeZone || (await resolvePrimaryTimeZone(client));
+
+  const [dailyResponse, hourlyResponse] = await Promise.all([
     ReportingHelper.loadAndWait(client, {
       query: {
         measures: ["Sales.net_sales"],
         timeDimensions: [
           {
             dimension: "Sales.local_reporting_timestamp",
-            dateRange: "last 30 days",
+            dateRange,
             granularity: "day",
           },
         ],
@@ -58,27 +100,30 @@ async function fetchSalesFromReporting(
         timeDimensions: [
           {
             dimension: "Sales.local_reporting_timestamp",
-            dateRange: "last 30 days",
+            dateRange,
             granularity: "hour",
           },
         ],
       },
     }),
-    resolvePrimaryTimeZone(client),
   ]);
 
-  const points = normalizeLoadRows(dailyResponse.data)
-    .map((row) => {
-      const dateRaw =
-        row["Sales.local_reporting_timestamp.day"] ??
-        row["Sales.local_reporting_timestamp"] ??
-        "";
-      return {
-        date: String(dateRaw).slice(0, 10),
-        netSales: Number(row["Sales.net_sales"] ?? 0) || 0,
-      };
-    })
-    .sort((a, b) => a.date.localeCompare(b.date));
+  const pointsByDate = new Map<string, number>();
+  for (const row of normalizeLoadRows(dailyResponse.data)) {
+    const dateRaw =
+      row["Sales.local_reporting_timestamp.day"] ??
+      row["Sales.local_reporting_timestamp"] ??
+      "";
+    const date = String(dateRaw).slice(0, 10);
+    if (!date) continue;
+    pointsByDate.set(date, Number(row["Sales.net_sales"] ?? 0) || 0);
+  }
+
+  const points = fillDateRange(
+    range.startDate,
+    range.endDate,
+    Object.fromEntries(pointsByDate),
+  );
 
   const byHourMap = new Map<number, number>();
   const byDateHour = new Map<string, Map<number, number>>();
@@ -105,9 +150,13 @@ async function fetchSalesFromReporting(
   return {
     points,
     byHour: fillHours(byHourMap),
-    byDayHour: toByDayHour(byDateHour, points.map((p) => p.date)),
+    byDayHour: toByDayHour(
+      byDateHour,
+      points.map((p) => p.date),
+    ),
     source: "reporting",
     timeZone,
+    range: { ...range, timeZone },
   };
 }
 
@@ -117,29 +166,33 @@ async function fetchSalesFromReporting(
  */
 async function fetchSalesFromOrders(
   client: SquareClient,
+  range: ResolvedSalesRange,
 ): Promise<SalesFetchResult> {
   const locations = await client.locations.list();
   const locationList = locations.locations ?? [];
   const locationIds = locationList
     .map((location) => location.id)
     .filter((id): id is string => Boolean(id));
-  const timeZone = locationList[0]?.timezone?.trim() || "UTC";
+  const timeZone =
+    range.timeZone || locationList[0]?.timezone?.trim() || "UTC";
 
   if (locationIds.length === 0) {
-    const points = fillLast30Days({});
+    const points = fillDateRange(range.startDate, range.endDate, {});
     return {
       points,
       byHour: fillHours(new Map()),
       byDayHour: toByDayHour(new Map(), points.map((p) => p.date)),
       source: "orders",
       timeZone,
+      range: { ...range, timeZone },
     };
   }
 
-  const end = new Date();
-  const start = new Date();
-  start.setUTCDate(start.getUTCDate() - 29);
-  start.setUTCHours(0, 0, 0, 0);
+  const { start, end } = zonedRangeBounds(
+    range.startDate,
+    range.endDate,
+    timeZone,
+  );
 
   const byDate = new Map<string, number>();
   const byHour = new Map<number, number>();
@@ -173,13 +226,16 @@ async function fetchSalesFromOrders(
       const date = orderDateKey(order, timeZone);
       const hour = orderHourKey(order, timeZone);
 
-      if (date) {
+      if (date && date >= range.startDate && date <= range.endDate) {
         byDate.set(date, (byDate.get(date) ?? 0) + cents);
       }
-      if (hour != null) {
+      if (
+        date &&
+        date >= range.startDate &&
+        date <= range.endDate &&
+        hour != null
+      ) {
         byHour.set(hour, (byHour.get(hour) ?? 0) + cents);
-      }
-      if (date && hour != null) {
         const dayMap = byDateHour.get(date) ?? new Map<number, number>();
         dayMap.set(hour, (dayMap.get(hour) ?? 0) + cents);
         byDateHour.set(date, dayMap);
@@ -208,7 +264,11 @@ async function fetchSalesFromOrders(
     dollarsByDateHour.set(date, converted);
   }
 
-  const points = fillLast30Days(dollarsByDate);
+  const points = fillDateRange(
+    range.startDate,
+    range.endDate,
+    dollarsByDate,
+  );
   return {
     points,
     byHour: fillHours(dollarsByHour),
@@ -218,6 +278,7 @@ async function fetchSalesFromOrders(
     ),
     source: "orders",
     timeZone,
+    range: { ...range, timeZone },
   };
 }
 
@@ -226,9 +287,17 @@ async function resolvePrimaryTimeZone(client: SquareClient): Promise<string> {
   return locations.locations?.[0]?.timezone?.trim() || "UTC";
 }
 
+export async function resolveMerchantTimeZone(
+  client: SquareClient,
+): Promise<string> {
+  return resolvePrimaryTimeZone(client);
+}
+
 function orderNetSalesCents(order: Order): number {
   const amounts = order.netAmounts;
-  const total = Number(amounts?.totalMoney?.amount ?? order.totalMoney?.amount ?? 0);
+  const total = Number(
+    amounts?.totalMoney?.amount ?? order.totalMoney?.amount ?? 0,
+  );
   const tax = Number(amounts?.taxMoney?.amount ?? 0);
   const tip = Number(amounts?.tipMoney?.amount ?? 0);
   return Math.max(0, total - tax - tip);
@@ -312,19 +381,15 @@ export function formatDisplayDate(isoDate: string): string {
   return `${Number(month)}/${Number(day)}/${year}`;
 }
 
-function fillLast30Days(byDate: Record<string, number>): DailyNetSalesPoint[] {
-  const points: DailyNetSalesPoint[] = [];
-  const cursor = new Date();
-  cursor.setUTCHours(12, 0, 0, 0);
-  cursor.setUTCDate(cursor.getUTCDate() - 29);
-
-  for (let i = 0; i < 30; i += 1) {
-    const date = cursor.toISOString().slice(0, 10);
-    points.push({ date, netSales: byDate[date] ?? 0 });
-    cursor.setUTCDate(cursor.getUTCDate() + 1);
-  }
-
-  return points;
+function fillDateRange(
+  startDate: string,
+  endDate: string,
+  byDate: Record<string, number>,
+): DailyNetSalesPoint[] {
+  return eachDateInRange(startDate, endDate).map((date) => ({
+    date,
+    netSales: byDate[date] ?? 0,
+  }));
 }
 
 function fillHours(byHour: Map<number, number>): HourlyNetSalesPoint[] {

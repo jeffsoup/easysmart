@@ -2,8 +2,20 @@ import type { Order, SquareClient } from "square";
 import { idempotencyKey } from "./random";
 import { warn } from "./log";
 
-/** Pays an order in full with a CASH tender, completing it. */
-export async function payOrderInFull(client: SquareClient, order: Order) {
+/** Square's standard Sandbox test nonce for a successful card charge. */
+const SANDBOX_CARD_NONCE = "cnon:card-nonce-ok";
+
+/**
+ * Pays an order in full, completing it. Uses the Sandbox card-nonce tender
+ * (not CASH) because associating a payment with a team member — via
+ * `teamMemberId` — is how Square attributes sales to staff, and that
+ * attribution is what "sold by" / team-performance reporting keys off of.
+ *
+ * If the order itself has a `customerId` (seed-orders.ts attaches one to
+ * most orders), that same customer is carried onto the payment too, so the
+ * order and its payment stay linked to the same buyer.
+ */
+export async function payOrderInFull(client: SquareClient, order: Order, teamMemberId?: string) {
   const amountMoney = order.totalMoney;
   if (!amountMoney || !order.id || !order.locationId) {
     warn(`Order ${order.id ?? "unknown"} has no total — leaving it open.`);
@@ -12,11 +24,12 @@ export async function payOrderInFull(client: SquareClient, order: Order) {
 
   const response = await client.payments.create({
     idempotencyKey: idempotencyKey(),
-    sourceId: "CASH",
+    sourceId: SANDBOX_CARD_NONCE,
     orderId: order.id,
     locationId: order.locationId,
     amountMoney,
-    cashDetails: { buyerSuppliedMoney: amountMoney },
+    teamMemberId,
+    customerId: order.customerId ?? undefined,
     autocomplete: true,
   });
 

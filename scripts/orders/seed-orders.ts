@@ -24,12 +24,16 @@ import type { SquareClient } from "square";
 import { createScriptClient, listLocationIds } from "../lib/client";
 import { allSeedVariations, type SeedVariation } from "../lib/catalog-seed-data";
 import { payOrderInFull } from "../lib/orders";
+import { listActiveTeamMemberIds } from "../lib/team";
+import { listCustomerIds } from "../lib/customers";
 import { idempotencyKey, randomChoice, randomInt, weightedSample } from "../lib/random";
 import { info, logSquareError, step, success, warn } from "../lib/log";
 
 const DEFAULT_ORDER_COUNT = 40;
 const OPEN_ORDER_RATE = 0.15;
 const MAX_EXTRA_LINE_ITEMS = 2;
+/** Share of orders attached to a known customer — the rest are anonymous walk-ins. */
+const CUSTOMER_ATTACH_RATE = 0.65;
 
 type CatalogLineItem = {
   variationId: string;
@@ -61,6 +65,22 @@ async function main() {
     );
   }
 
+  const teamMemberIds = await listActiveTeamMemberIds(client);
+  if (teamMemberIds.length === 0) {
+    warn(
+      "No active team members found — payments will be created without a team_member_id. " +
+        "Run `npm run seed:team` first to attribute sales to staff.",
+    );
+  }
+
+  const customerIds = await listCustomerIds(client);
+  if (customerIds.length === 0) {
+    warn(
+      "No customers found — orders will be created without a customer_id. " +
+        "Run `npm run seed:customers` first to attribute orders to buyers.",
+    );
+  }
+
   step(`Creating ${count} orders across ${locationIds.length} location(s)`);
   let completed = 0;
   let opened = 0;
@@ -71,9 +91,10 @@ async function main() {
     const shouldComplete = Math.random() > OPEN_ORDER_RATE;
 
     try {
-      const order = await createOrder(client, locationId, forcedItems, fillPool, catalogItems);
+      const order = await createOrder(client, locationId, forcedItems, fillPool, catalogItems, customerIds);
       if (shouldComplete) {
-        await payOrderInFull(client, order);
+        const teamMemberId = teamMemberIds.length > 0 ? randomChoice(teamMemberIds) : undefined;
+        await payOrderInFull(client, order, teamMemberId);
         completed += 1;
       } else {
         opened += 1;
@@ -131,6 +152,7 @@ async function createOrder(
   forcedItems: CatalogLineItem[],
   fillPool: CatalogLineItem[],
   allItems: CatalogLineItem[],
+  customerIds: string[],
 ) {
   const forcedIds = new Set(forcedItems.map((item) => item.variationId));
   const extrasPool = fillPool.filter((item) => !forcedIds.has(item.variationId));
@@ -151,10 +173,16 @@ async function createOrder(
     picks.push({ variationId: fallback.variationId, quantity: 1 });
   }
 
+  const customerId =
+    customerIds.length > 0 && Math.random() < CUSTOMER_ATTACH_RATE
+      ? randomChoice(customerIds)
+      : undefined;
+
   const response = await client.orders.create({
     idempotencyKey: idempotencyKey(),
     order: {
       locationId,
+      customerId,
       lineItems: picks.map((pick) => ({
         catalogObjectId: pick.variationId,
         quantity: String(pick.quantity),

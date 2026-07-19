@@ -33,8 +33,43 @@ export function SalesChart({ points, onSelectDay }: Props) {
   const padBottom = 40;
   const chartW = width - padLeft - padRight;
   const chartH = height - padTop - padBottom;
-  const gap = points.length > 1 ? chartW / points.length : chartW;
-  const barW = Math.max(4, gap * 0.62);
+  const gap = points.length > 1 ? chartW / (points.length - 1) : chartW;
+  const baseline = padTop + chartH;
+
+  const coords = points.map((p, i) => {
+    const x =
+      points.length === 1
+        ? padLeft + chartW / 2
+        : padLeft + i * gap;
+    const y = padTop + chartH - (p.netSales / max) * chartH;
+    return { x, y, point: p };
+  });
+
+  // Single-day ranges (e.g. Today) still get a visible filled line band.
+  const linePath =
+    coords.length === 0
+      ? ""
+      : coords.length === 1
+        ? `M ${padLeft} ${coords[0].y} L ${padLeft + chartW} ${coords[0].y}`
+        : coords.map((c, i) => `${i === 0 ? "M" : "L"} ${c.x} ${c.y}`).join(" ");
+
+  const areaPath =
+    coords.length === 0
+      ? ""
+      : coords.length === 1
+        ? [
+            `M ${padLeft} ${baseline}`,
+            `L ${padLeft} ${coords[0].y}`,
+            `L ${padLeft + chartW} ${coords[0].y}`,
+            `L ${padLeft + chartW} ${baseline}`,
+            "Z",
+          ].join(" ")
+        : [
+            `M ${coords[0].x} ${baseline}`,
+            ...coords.map((c) => `L ${c.x} ${c.y}`),
+            `L ${coords[coords.length - 1].x} ${baseline}`,
+            "Z",
+          ].join(" ");
 
   const yTicks = [0, 0.25, 0.5, 0.75, 1].map((ratio) => ({
     ratio,
@@ -45,22 +80,21 @@ export function SalesChart({ points, onSelectDay }: Props) {
   const labelEvery = points.length > 20 ? 5 : points.length > 10 ? 3 : 2;
   const hovered = points.find((p) => p.date === hoveredDate) ?? null;
 
-  const path = points
-    .map((p, i) => {
-      const x = padLeft + i * gap + gap / 2;
-      const y = padTop + chartH - (p.netSales / max) * chartH;
-      return `${i === 0 ? "M" : "L"} ${x} ${y}`;
-    })
-    .join(" ");
-
   return (
     <div className="w-full overflow-x-auto">
       <svg
         viewBox={`0 0 ${width} ${height}`}
-        className="h-64 w-full min-w-[480px]"
+        className="h-56 w-full min-w-[280px]"
         role="img"
-        aria-label="Daily net sales for the last 30 days. Click a day for hourly detail."
+        aria-label="Daily net sales. Click a day for hourly detail."
       >
+        <defs>
+          <linearGradient id="dailySalesFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#0f766e" stopOpacity="0.35" />
+            <stop offset="100%" stopColor="#0f766e" stopOpacity="0.04" />
+          </linearGradient>
+        </defs>
+
         {yTicks.map((tick) => (
           <g key={tick.ratio}>
             <line
@@ -85,21 +119,36 @@ export function SalesChart({ points, onSelectDay }: Props) {
           </g>
         ))}
 
-        {points.map((p, i) => {
-          const x = padLeft + i * gap + (gap - barW) / 2;
-          const h = (p.netSales / max) * chartH;
-          const y = padTop + chartH - h;
+        {areaPath ? (
+          <path d={areaPath} fill="url(#dailySalesFill)" className="pointer-events-none" />
+        ) : null}
+
+        {linePath ? (
+          <path
+            d={linePath}
+            fill="none"
+            className="stroke-teal-800 pointer-events-none"
+            strokeWidth={2}
+            strokeLinejoin="round"
+            strokeLinecap="round"
+          />
+        ) : null}
+
+        {coords.map(({ x, y, point: p }, i) => {
           const showLabel =
             i === 0 || i === points.length - 1 || i % labelEvery === 0;
-          const centerX = padLeft + i * gap + gap / 2;
           const isHovered = hoveredDate === p.date;
+          const hitHalf =
+            points.length > 1
+              ? Math.max(gap / 2, 8)
+              : chartW / 2;
 
           return (
             <g key={p.date}>
               <rect
-                x={padLeft + i * gap}
+                x={x - hitHalf}
                 y={padTop}
-                width={gap}
+                width={hitHalf * 2}
                 height={chartH}
                 className="fill-transparent cursor-pointer"
                 focusable={onSelectDay ? "true" : undefined}
@@ -119,33 +168,31 @@ export function SalesChart({ points, onSelectDay }: Props) {
                   }
                 }}
               />
-              <rect
-                x={x}
-                y={y}
-                width={barW}
-                height={Math.max(h, 0)}
+              <circle
+                cx={x}
+                cy={y}
+                r={isHovered ? 4.5 : 3}
                 className={
                   isHovered
-                    ? "fill-teal-800 pointer-events-none"
-                    : "fill-teal-700/85 pointer-events-none"
+                    ? "fill-teal-900 pointer-events-none"
+                    : "fill-teal-800 pointer-events-none"
                 }
-                rx={2}
               />
               <line
-                x1={centerX}
-                y1={padTop + chartH}
-                x2={centerX}
-                y2={padTop + chartH + (showLabel ? 5 : 3)}
+                x1={x}
+                y1={baseline}
+                x2={x}
+                y2={baseline + (showLabel ? 5 : 3)}
                 stroke="currentColor"
-                className="text-stone-400"
+                className="text-stone-400 pointer-events-none"
                 strokeWidth={1}
               />
               {showLabel ? (
                 <text
-                  x={centerX}
+                  x={x}
                   y={height - 12}
                   textAnchor="middle"
-                  className="fill-stone-500 text-[10px]"
+                  className="fill-stone-500 text-[10px] pointer-events-none"
                 >
                   {formatDateLabel(p.date)}
                 </text>
@@ -154,21 +201,11 @@ export function SalesChart({ points, onSelectDay }: Props) {
           );
         })}
 
-        {points.length > 1 ? (
-          <path
-            d={path}
-            fill="none"
-            className="stroke-amber-800 pointer-events-none"
-            strokeWidth={1.5}
-            strokeLinejoin="round"
-          />
-        ) : null}
-
         {hovered
           ? (() => {
               const index = points.findIndex((p) => p.date === hovered.date);
               const tipX = Math.min(
-                Math.max(padLeft + index * gap + gap / 2, padLeft + 54),
+                Math.max(coords[index]?.x ?? padLeft, padLeft + 54),
                 width - padRight - 54,
               );
               return (

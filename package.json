@@ -8,9 +8,10 @@
     "start": "next start",
     "lint": "eslint",
     "seed:inventory": "tsx scripts/inventory/seed-inventory.ts",
+    "seed:team": "tsx scripts/team/seed-team-members.ts",
+    "seed:customers": "tsx scripts/customers/seed-customers.ts",
     "seed:orders": "tsx scripts/orders/seed-orders.ts",
     "seed:payments": "tsx scripts/payments/seed-payments.ts",
-    "seed:team": "tsx scripts/team/seed-team-members.ts",
     "seed:payroll": "tsx scripts/payroll/seed-payroll.ts",
     "seed:all": "tsx scripts/seed-all.ts"
   },

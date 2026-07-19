@@ -4,6 +4,7 @@ import { DashboardTabs } from "@/components/DashboardTabs";
 import { InventoryHealth } from "@/components/InventoryHealth";
 import { LaborInsights } from "@/components/LaborInsights";
 import { NetSalesPanel } from "@/components/NetSalesPanel";
+import { fetchDayItemSales } from "@/lib/dayItemSales";
 import {
   fetchInventoryHealth,
   type InventoryHealthReport,
@@ -13,9 +14,11 @@ import {
   type LaborInsightReport,
 } from "@/lib/labor";
 import {
-  fetchDailyNetSalesLast30Days,
+  fetchDailyNetSales,
+  resolveMerchantTimeZone,
   summarizeSales,
 } from "@/lib/reporting";
+import { resolveAbsoluteRange } from "@/lib/salesRange";
 import { getSession } from "@/lib/session";
 import { createSellerClient } from "@/lib/square";
 
@@ -47,18 +50,16 @@ export default async function DashboardPage() {
 
   const client = createSellerClient(session.accessToken);
 
-  let points: Awaited<
-    ReturnType<typeof fetchDailyNetSalesLast30Days>
-  >["points"] = [];
-  let byHour: Awaited<
-    ReturnType<typeof fetchDailyNetSalesLast30Days>
-  >["byHour"] = [];
+  let points: Awaited<ReturnType<typeof fetchDailyNetSales>>["points"] = [];
+  let byHour: Awaited<ReturnType<typeof fetchDailyNetSales>>["byHour"] = [];
   let byDayHour: Awaited<
-    ReturnType<typeof fetchDailyNetSalesLast30Days>
+    ReturnType<typeof fetchDailyNetSales>
   >["byDayHour"] = {};
+  let byDayItems: Awaited<ReturnType<typeof fetchDayItemSales>>["byDay"] = {};
   let source: "reporting" | "orders" | null = null;
   let timeZone = "UTC";
   let salesError: string | null = null;
+  let range = resolveAbsoluteRange("last_7_days", "UTC");
 
   let inventoryReport: InventoryHealthReport | null = null;
   let inventoryError: string | null = null;
@@ -67,16 +68,30 @@ export default async function DashboardPage() {
   let laborError: string | null = null;
 
   try {
-    const result = await fetchDailyNetSalesLast30Days(client);
+    timeZone = await resolveMerchantTimeZone(client);
+    range = resolveAbsoluteRange("last_7_days", timeZone);
+    const result = await fetchDailyNetSales(client, range);
     points = result.points;
     byHour = result.byHour;
     byDayHour = result.byDayHour;
     source = result.source;
     timeZone = result.timeZone;
+    range = result.range;
   } catch (err) {
     salesError = scopeHint(
       err instanceof Error ? err.message : "Failed to load sales data",
     );
+  }
+
+  try {
+    const dayItems = await fetchDayItemSales(client, range);
+    byDayItems = dayItems.byDay;
+    if (!timeZone || timeZone === "UTC") {
+      timeZone = dayItems.timeZone;
+    }
+  } catch {
+    // Items drill-down is best-effort; keep daily sales charts available.
+    byDayItems = {};
   }
 
   const summary = summarizeSales(points);
@@ -144,13 +159,17 @@ export default async function DashboardPage() {
       <DashboardTabs
         sales={
           <NetSalesPanel
-            points={points}
-            byHour={byHour}
-            byDayHour={byDayHour}
-            source={source}
-            timeZone={timeZone}
-            error={salesError}
-            summary={summary}
+            initial={{
+              points,
+              byHour,
+              byDayHour,
+              byDayItems,
+              source,
+              timeZone,
+              range,
+              summary,
+              error: salesError,
+            }}
           />
         }
         inventory={

@@ -38,14 +38,17 @@ Or run each piece on its own:
 
 ```bash
 npm run seed:inventory   # categories, items, variations, starting stock counts
+npm run seed:team        # jobs + team members with hourly/salary wage settings
+npm run seed:customers   # a pool of customer profiles
 npm run seed:orders      # orders against that catalog; most paid, some left open
 npm run seed:payments    # pays off any open orders + a few standalone charges + one refund
-npm run seed:team        # jobs + team members with hourly/salary wage settings
 npm run seed:payroll     # 30 days of closed timecards for hourly team members
 ```
 
 Order matters if you run scripts individually: `seed:inventory` before
-`seed:orders`, and `seed:team` before `seed:payroll`. `seed:orders` before
+`seed:orders`, and `seed:team` / `seed:customers` before `seed:orders` /
+`seed:payments` if you want orders and payments attributed to staff and
+buyers (see "Team-member & customer attribution" below). `seed:orders` before
 `seed:payments` is recommended but not required — `seed:payments` will just
 find zero open orders to pay if none exist yet, and still creates its
 standalone charges.
@@ -67,9 +70,10 @@ npm run seed:payroll -- --shifts=20    # shifts per team member, default 15
 | Script | Creates |
 | --- | --- |
 | `seed:inventory` | 3 categories, 9 items, starting stock counts — see "The inventory mix" below |
-| `seed:orders` | ~40 orders with 1–4 line items each, ~85% paid and completed, ~15% left open |
-| `seed:payments` | Pays off open orders, records 3 standalone custom-amount payments, issues 1 sample refund |
 | `seed:team` | 4 jobs (Barista, Cashier, Shift Lead, Store Manager), 5 team members with wage settings (4 hourly, 1 salaried) |
+| `seed:customers` | 10 customer profiles |
+| `seed:orders` | ~40 orders with 1–4 line items each, ~85% paid and completed (each attributed to a random team member, ~65% also attributed to a random customer), ~15% left open |
+| `seed:payments` | Pays off open orders (attributed to staff/customer same as above), records 3 standalone custom-amount payments (always attributed to a customer + team member), issues 1 sample refund |
 | `seed:payroll` | ~15 closed timecards per hourly team member, spread across the last 29 days, with breaks on longer shifts |
 
 ## The inventory mix
@@ -98,6 +102,32 @@ The near-zero-cover math depends on order volume: at the default `--count=40`
 stock. Very low counts (below ~20) may not sell through enough to cross the
 7-day line — use the default or higher if you want that item to reliably
 show up as low stock.
+
+## Team-member & customer attribution
+
+Every payment `seed:orders` and `seed:payments` create is attributed to a
+random active team member, using the pattern Square requires for this:
+
+1. Create the order.
+2. Create the payment against a Sandbox test card nonce (`cnon:card-nonce-ok`,
+   not `CASH`), with `orderId` set to that order and `teamMemberId` set to the
+   team member.
+
+`scripts/lib/team.ts` resolves active team member IDs live from the Team API
+(`teamMembers.search`) each run — nothing is hardcoded, so it keeps working
+across Sandbox resets. If no active team members exist yet, both scripts warn
+and fall back to creating payments without a `teamMemberId` rather than
+failing outright — run `npm run seed:team` first for full attribution.
+
+Customers work the same way, via `scripts/lib/customers.ts`
+(`customers.list`): `seed-orders.ts` attaches a random customer to ~65% of
+orders (the rest are anonymous walk-ins, which is realistic — not every sale
+has a known buyer), and `payOrderInFull` carries that same `customerId`
+through from the order onto its payment, so the two stay linked to the same
+buyer. `seed:payments`'s standalone deposit/invoice payments always attach a
+customer, since those inherently represent a specific buyer. Run
+`npm run seed:customers` first for this; otherwise orders/payments are
+created without a `customer_id`, same graceful fallback as team members.
 
 ## Known limitations
 
@@ -161,12 +191,15 @@ scripts/
     client.ts             # SquareClient + location lookup
     orders.ts             # shared order-payment helper (used by orders + payments scripts)
     catalog-seed-data.ts   # shared catalog + sales-profile dataset (inventory + orders scripts)
+    team.ts                # active team member ID lookup (orders + payments scripts)
+    customers.ts           # customer ID lookup (orders + payments scripts)
     random.ts              # idempotency keys, random/weighted picks, times
     log.ts                 # console output helpers
   inventory/seed-inventory.ts
+  team/seed-team-members.ts
+  customers/seed-customers.ts
   orders/seed-orders.ts
   payments/seed-payments.ts
-  team/seed-team-members.ts
   payroll/seed-payroll.ts
   seed-all.ts
 ```
